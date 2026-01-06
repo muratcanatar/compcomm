@@ -57,13 +57,16 @@ function processDigitalToDigital(algorithm: string, data: string) {
     case "nrz-i": {
       encoded = []
       let level = 0
-      bits.forEach((b) => {
-        if (b === 1) level = 1 - level
+      bits.forEach((b, idx) => {
+        if (idx === 0) {
+          level = b
+        } else {
+          if (b === 1) level = 1 - level
+        }
         encoded.push(level)
       })
 
-      // decode NRZ-I
-      const rec: number[] = [bits[0]]
+      const rec: number[] = [encoded[0]]
       for (let i = 1; i < encoded.length; i++) {
         rec.push(encoded[i] !== encoded[i - 1] ? 1 : 0)
       }
@@ -83,18 +86,18 @@ function processDigitalToDigital(algorithm: string, data: string) {
       encoded = []
       let level = 0
       bits.forEach((b) => {
-        if (b === 0) level = 1 - level // transition at start for 0
+        if (b === 0) level = 1 - level
         const start = level
-        level = 1 - level // mandatory mid-bit transition
+        level = 1 - level
         const mid = level
         encoded.push(start, mid)
       })
 
       decoded = ""
-      let prevLevel = 0 // assumed initial level before first bit
+      let prevLevel = 0
       for (let i = 0; i < encoded.length; i += 2) {
         const start = encoded[i]
-        decoded += start === prevLevel ? "1" : "0"
+        decoded += start !== prevLevel ? "0" : "1"
         const mid = encoded[i + 1]
         prevLevel = mid
       }
@@ -182,10 +185,29 @@ function processDigitalToAnalog(algorithm: string, data: string) {
       modulated = bits.flatMap((b) => Array(SAMPLE_COUNT).fill(b))
   }
 
+  let demodulated = ""
+  for (let i = 0; i < modulated.length; i += SAMPLE_COUNT) {
+    const segment = modulated.slice(i, i + SAMPLE_COUNT)
+    const avg = segment.reduce((a, b) => a + Math.abs(b), 0) / segment.length
+
+    if (algorithm === "ask") {
+      demodulated += avg > 0.6 ? "1" : "0"
+    } else if (algorithm === "fsk") {
+      const highFreq = segment.filter((_, idx) => idx > 0 && Math.abs(segment[idx] - segment[idx - 1]) > 0.5).length
+      demodulated += highFreq > 3 ? "1" : "0"
+    } else if (algorithm === "psk") {
+      demodulated += segment[0] < 0 ? "1" : "0"
+    } else if (algorithm === "qam") {
+      demodulated += avg > 0.8 ? "1" : "0"
+    } else {
+      demodulated += avg > 0.5 ? "1" : "0"
+    }
+  }
+
   return {
     original: data,
     encoded: modulated,
-    decoded: bits.join(""), // dummy demodulation
+    decoded: demodulated,
     metrics: calcMetrics(data.length, algorithm),
   }
 }
@@ -246,20 +268,41 @@ function processAnalogToAnalog(algorithm: string, data: string) {
       modulated = analogValues.flatMap((v) =>
         Array.from({ length: SAMPLES }, (_, i) => v * (1 + 0.5 * Math.sin((2 * Math.PI * i) / SAMPLES))),
       )
-      demodulated = [...modulated]
+      demodulated = []
+      for (let i = 0; i < modulated.length; i += SAMPLES) {
+        const segment = modulated.slice(i, i + SAMPLES)
+        const envelope = segment.reduce((sum, val) => sum + Math.abs(val), 0) / SAMPLES
+        demodulated.push(envelope / 1.5)
+      }
       break
     case "fm":
       modulated = analogValues.flatMap((v) => {
         const freq = 2 + Math.abs(v)
         return Array.from({ length: SAMPLES }, (_, i) => Math.sin((2 * Math.PI * freq * i) / SAMPLES))
       })
-      demodulated = [...modulated]
+      demodulated = []
+      for (let i = 0; i < modulated.length; i += SAMPLES) {
+        const segment = modulated.slice(i, i + SAMPLES)
+        let zeroCrossings = 0
+        for (let j = 1; j < segment.length; j++) {
+          if ((segment[j - 1] >= 0 && segment[j] < 0) || (segment[j - 1] < 0 && segment[j] >= 0)) {
+            zeroCrossings++
+          }
+        }
+        const freq = zeroCrossings / 2
+        demodulated.push(freq - 2)
+      }
       break
     case "pm":
       modulated = analogValues.flatMap((v) =>
         Array.from({ length: SAMPLES }, (_, i) => Math.sin((2 * Math.PI * 2 * i) / SAMPLES + v)),
       )
-      demodulated = [...modulated]
+      demodulated = []
+      for (let i = 0; i < modulated.length; i += SAMPLES) {
+        const segment = modulated.slice(i, i + SAMPLES)
+        const phase = Math.atan2(segment[SAMPLES / 4] || 0, segment[0] || 1)
+        demodulated.push(phase)
+      }
       break
     default:
       modulated = [...analogValues]

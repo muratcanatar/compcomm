@@ -50,16 +50,23 @@ function processDigitalToDigital(algorithm: string, data: string) {
   const encoders: Record<string, (bits: number[]) => number[]> = {
     "nrz-l": (b) => [...b],
     "nrz-i": (b) => {
-      let level = 0; // Başlangıç seviyesi
-      return b.map(bit => (bit === 1 ? (level = 1 - level) : level));
+      let level = 0;
+      return b.map((bit, idx) => {
+        if (idx === 0) {
+          level = bit;
+        } else {
+          if (bit === 1) level = 1 - level;
+        }
+        return level;
+      });
     },
     "manchester": (b) => b.flatMap(bit => (bit === 1 ? [0, 1] : [1, 0])),
     "diff-manchester": (b) => {
       let level = 0;
       return b.flatMap(bit => {
-        if (bit === 0) level = 1 - level; // transition at start for 0
+        if (bit === 0) level = 1 - level;
         const start = level;
-        level = 1 - level; // mandatory mid-bit transition
+        level = 1 - level;
         const mid = level;
         return [start, mid];
       });
@@ -70,9 +77,9 @@ function processDigitalToDigital(algorithm: string, data: string) {
         if (bit === 1) {
           const val = polarity;
           polarity = -polarity;
-          return val === 1 ? 1 : 0; // Not: Orijinal kodda logic biraz karışıktı, burada düzelttik.
+          return val;
         }
-        return 0.5; // Neutral
+        return 0;
       });
     }
   };
@@ -80,10 +87,8 @@ function processDigitalToDigital(algorithm: string, data: string) {
   // Decoding Logic Map
   const decoders: Record<string, (encoded: number[], originalBits?: number[]) => string> = {
     "nrz-l": (enc) => enc.map(Math.round).join(""),
-    "nrz-i": (enc, orig) => {
-      // Decode işlemi için ilk bit referansına ihtiyaç duyar (simülasyon için orig kullanıyoruz)
-      if (!orig) return ""; 
-      const decodedBits = [orig[0]];
+    "nrz-i": (enc) => {
+      const decodedBits = [enc[0]];
       for (let i = 1; i < enc.length; i++) {
         decodedBits.push(enc[i] !== enc[i - 1] ? 1 : 0);
       }
@@ -98,23 +103,23 @@ function processDigitalToDigital(algorithm: string, data: string) {
     },
     "diff-manchester": (enc) => {
       let res = "";
-      let prevLevel = 0; // assumed initial level before first bit
+      let prevLevel = 0;
       for (let i = 0; i < enc.length; i += 2) {
         const start = enc[i];
-        res += start === prevLevel ? "1" : "0";
+        res += start !== prevLevel ? "0" : "1";
         const mid = enc[i + 1];
         prevLevel = mid;
       }
       return res;
     },
-    "ami": (enc) => enc.map(e => (e === 0.5 ? 0 : 1)).join("")
+    "ami": (enc) => enc.map(e => (e === 0 ? 0 : 1)).join("")
   };
 
-  const encodeFn = encoders[algorithm] || encoders["nrz-l"]; // Fallback
+  const encodeFn = encoders[algorithm] || encoders["nrz-l"];
   const encoded = encodeFn(bits);
 
-  const decodeFn = decoders[algorithm] || ((_, orig) => orig?.join("") || "");
-  const decoded = decodeFn(encoded, bits);
+  const decodeFn = decoders[algorithm] || ((enc) => enc.join(""));
+  const decoded = decodeFn(encoded);
 
   return {
     original: data,
@@ -154,10 +159,29 @@ function processDigitalToAnalog(algorithm: string, data: string) {
   const strategy = strategies[algorithm] || ((bit) => generateWave(() => bit));
   const modulated = bits.flatMap((bit, idx) => strategy(bit, idx));
 
+  let demodulated = ""
+  for (let i = 0; i < modulated.length; i += SAMPLES_PER_BIT) {
+    const segment = modulated.slice(i, i + SAMPLES_PER_BIT)
+    const avg = segment.reduce((a, b) => a + Math.abs(b), 0) / segment.length
+
+    if (algorithm === "ask") {
+      demodulated += avg > 0.6 ? "1" : "0"
+    } else if (algorithm === "fsk") {
+      const highFreq = segment.filter((_, idx) => idx > 0 && Math.abs(segment[idx] - segment[idx - 1]) > 0.5).length
+      demodulated += highFreq > 3 ? "1" : "0"
+    } else if (algorithm === "psk") {
+      demodulated += segment[0] < 0 ? "1" : "0"
+    } else if (algorithm === "qam") {
+      demodulated += avg > 0.8 ? "1" : "0"
+    } else {
+      demodulated += avg > 0.5 ? "1" : "0"
+    }
+  }
+
   return {
     original: data,
     encoded: modulated,
-    decoded: data, // Digital to Analog'da decode genellikle demodülasyondur, burada basit tutuldu.
+    decoded: demodulated,
     metrics: {
       bitRate: `${data.length * 1000} bps`,
       signalLevels: algorithm === "qam" ? "16" : algorithm === "psk" ? "4" : "2",
@@ -222,20 +246,41 @@ function processAnalogToAnalog(algorithm: string, data: string) {
       modulated = analogValues.flatMap((v) =>
         Array.from({ length: SAMPLES }, (_, i) => v * (1 + 0.5 * Math.sin((2 * Math.PI * i) / SAMPLES)))
       );
-      demodulated = [...modulated];
+      demodulated = []
+      for (let i = 0; i < modulated.length; i += SAMPLES) {
+        const segment = modulated.slice(i, i + SAMPLES)
+        const envelope = segment.reduce((sum, val) => sum + Math.abs(val), 0) / SAMPLES
+        demodulated.push(envelope / 1.5)
+      }
       break;
     case "fm":
       modulated = analogValues.flatMap((v) => {
         const freq = 2 + Math.abs(v);
         return Array.from({ length: SAMPLES }, (_, i) => Math.sin((2 * Math.PI * freq * i) / SAMPLES));
       });
-      demodulated = [...modulated];
+      demodulated = []
+      for (let i = 0; i < modulated.length; i += SAMPLES) {
+        const segment = modulated.slice(i, i + SAMPLES)
+        let zeroCrossings = 0
+        for (let j = 1; j < segment.length; j++) {
+          if ((segment[j - 1] >= 0 && segment[j] < 0) || (segment[j - 1] < 0 && segment[j] >= 0)) {
+            zeroCrossings++
+          }
+        }
+        const freq = zeroCrossings / 2
+        demodulated.push(freq - 2)
+      }
       break;
     case "pm":
       modulated = analogValues.flatMap((v) =>
         Array.from({ length: SAMPLES }, (_, i) => Math.sin((2 * Math.PI * 2 * i) / SAMPLES + v))
       );
-      demodulated = [...modulated];
+      demodulated = []
+      for (let i = 0; i < modulated.length; i += SAMPLES) {
+        const segment = modulated.slice(i, i + SAMPLES)
+        const phase = Math.atan2(segment[SAMPLES / 4] || 0, segment[0] || 1)
+        demodulated.push(phase)
+      }
       break;
     default:
       modulated = analogValues;
