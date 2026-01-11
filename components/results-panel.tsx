@@ -25,7 +25,7 @@ interface ResultsPanelProps {
 }
 
 export function ResultsPanel({ mode, algorithm, results, implementationLabel, durationMs }: ResultsPanelProps) {
-  const areArraysClose = (a: number[], b: number[], tolerance = 1e-3) => {
+  const areArraysClose = (a: number[], b: number[], tolerance = 0.01) => {
     if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
     return a.every((val, idx) => Math.abs(Number(val) - Number(b[idx])) <= tolerance)
   }

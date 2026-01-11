@@ -1,350 +1,252 @@
-// ======================================================
-// TRANSMISSION MODE
-// ======================================================
+// ============================================================
+// COMPACT TRANSMISSION LIBRARY - CHAT VERSION
+// Minimal, fast implementation with inline optimizations
+// ============================================================
 
-export type TransmissionMode =
-  | "digital-to-digital"
-  | "digital-to-analog"
-  | "analog-to-digital"
-  | "analog-to-analog"
+export type TransmissionMode = "digital-to-digital" | "digital-to-analog" | "analog-to-digital" | "analog-to-analog"
 
-export function processTransmission(
-  mode: TransmissionMode,
-  algorithm: string,
-  inputData: string
-) {
+// Constants
+const S = 10  // Samples per bit
+const C = 2   // Carrier frequency
+const A = 20  // Analog samples
+const L = 256 // PCM levels
+
+// Helpers
+const bits = (s: string) => s.split("").map(Number)
+const analog = (s: string) => (s.replace(/["""]/g, "").match(/-?\d*\.?\d+/g) || []).map(Number)
+const wave = (n: number, f: (i: number) => number) => Array.from({ length: n }, (_, i) => f(i))
+const zeros = (a: number[]) => a.slice(1).filter((v, i) => (a[i] >= 0) !== (v >= 0)).length
+
+export function processTransmission(mode: TransmissionMode, algo: string, data: string) {
   switch (mode) {
-    case "digital-to-digital":
-      return processDigitalToDigital(algorithm, inputData)
-
-    case "digital-to-analog":
-      return processDigitalToAnalog(algorithm, inputData)
-
-    case "analog-to-digital":
-      return processAnalogToDigital(algorithm, inputData)
-
-    case "analog-to-analog":
-      return processAnalogToAnalog(algorithm, inputData)
-
-    default:
-      return null
+    case "digital-to-digital": return d2d(algo, data)
+    case "digital-to-analog": return d2a(algo, data)
+    case "analog-to-digital": return a2d(algo, data)
+    case "analog-to-analog": return a2a(algo, data)
+    default: return null
   }
 }
 
-// Utility
-const parseBits = (data: string) => data.split("").map(n => Number(n));
-const parseAnalog = (data: string) => {
-  const cleaned = data.replace(/["“”]/g, "")
-  const matches = cleaned.match(/-?\d*\.?\d+(?:e-?\d+)?/gi) || []
-  return matches.map((m) => Number.parseFloat(m)).filter((v) => !Number.isNaN(v))
-}
+// ============================================================
+// DIGITAL TO DIGITAL
+// ============================================================
+function d2d(algo: string, data: string) {
+  const b = bits(data)
+  let enc: number[], dec: string
 
-// ======================================================
-// DIGITAL → DIGITAL
-// ======================================================
-
-function processDigitalToDigital(algorithm: string, data: string) {
-  const bits = parseBits(data)
-  let encoded: number[] = []
-  let decoded = ""
-
-  switch (algorithm) {
+  switch (algo) {
     case "nrz-l":
-      encoded = [...bits]
-      decoded = bits.join("")
+      enc = [...b]
+      dec = enc.join("")
       break
 
     case "nrz-i": {
-      encoded = []
-      let level = 0
-      bits.forEach((b, idx) => {
-        if (idx === 0) {
-          level = b
-        } else {
-          if (b === 1) level = 1 - level
-        }
-        encoded.push(level)
-      })
-
-      const rec: number[] = [encoded[0]]
-      for (let i = 1; i < encoded.length; i++) {
-        rec.push(encoded[i] !== encoded[i - 1] ? 1 : 0)
-      }
-      decoded = rec.join("")
+      enc = []
+      let lv = 0
+      b.forEach(x => { if (x === 1) lv = 1 - lv; enc.push(lv) })
+      dec = enc.map((v, i) => i === 0 ? v : (v !== enc[i-1] ? 1 : 0)).join("")
       break
     }
 
     case "manchester":
-      encoded = bits.flatMap((b) => (b === 1 ? [0, 1] : [1, 0]))
-      decoded = encoded.reduce((acc, _, i) => {
-        if (i % 2 === 0) acc += encoded[i] === 0 ? "1" : "0"
-        return acc
-      }, "")
+      enc = b.flatMap(x => x ? [0, 1] : [1, 0])
+      dec = wave(b.length, i => enc[i*2] === 0 ? 1 : 0).join("")
       break
 
     case "diff-manchester": {
-      encoded = []
-      let level = 0
-      bits.forEach((b) => {
-        if (b === 0) level = 1 - level
-        const start = level
-        level = 1 - level
-        const mid = level
-        encoded.push(start, mid)
+      enc = []
+      let lv = 0
+      b.forEach(x => {
+        if (x === 0) lv = 1 - lv
+        enc.push(lv, 1 - lv)
+        lv = 1 - lv
       })
-
-      decoded = ""
-      let prevLevel = 0
-      for (let i = 0; i < encoded.length; i += 2) {
-        const start = encoded[i]
-        decoded += start !== prevLevel ? "0" : "1"
-        const mid = encoded[i + 1]
-        prevLevel = mid
+      dec = ""
+      let prev = 0
+      for (let i = 0; i < enc.length; i += 2) {
+        dec += enc[i] !== prev ? "0" : "1"
+        prev = enc[i + 1]
       }
       break
     }
 
     case "ami": {
-      let polarity = 1
-      encoded = bits.map((b) => {
-        if (b === 1) {
-          const out = polarity
-          polarity = -polarity
-          return out
-        }
-        return 0
-      })
-
-      decoded = encoded.map((v) => (v === 0 ? "0" : "1")).join("")
+      let pol = 1
+      enc = b.map(x => x ? (pol = -pol, -pol) : 0)
+      dec = enc.map(x => x ? 1 : 0).join("")
       break
     }
 
     default:
-      encoded = [...bits]
-      decoded = data
+      enc = [...b]
+      dec = data
   }
 
   return {
     original: data,
-    encoded,
-    decoded,
-    metrics: calcMetrics(data.length, algorithm),
-  }
-}
-
-// ======================================================
-// DIGITAL → ANALOG
-// ======================================================
-
-function processDigitalToAnalog(algorithm: string, data: string) {
-  const bits = parseBits(data)
-  let modulated: number[] = []
-  const CARRIER = 2
-  const SAMPLE_COUNT = 10
-
-  switch (algorithm) {
-    case "ask":
-      modulated = bits.flatMap((b) =>
-        Array(SAMPLE_COUNT).fill(b === 1 ? 1 : 0.2)
-      )
-      break
-
-    case "fsk":
-      modulated = bits.flatMap((b) => {
-        const freq = b === 1 ? 4 : 2
-        return Array(SAMPLE_COUNT)
-          .fill(0)
-          .map((_, i) => Math.sin((2 * Math.PI * freq * i) / SAMPLE_COUNT))
-      })
-      break
-
-    case "psk":
-      modulated = bits.flatMap((b) =>
-        Array(SAMPLE_COUNT)
-          .fill(0)
-          .map((_, i) =>
-            Math.sin(
-              (2 * Math.PI * CARRIER * i) / SAMPLE_COUNT + (b === 1 ? Math.PI : 0)
-            )
-          )
-      )
-      break
-
-    case "qam":
-      modulated = bits.flatMap((b) =>
-        Array(SAMPLE_COUNT)
-          .fill(0)
-          .map((_, i) =>
-            Math.sin((2 * Math.PI * CARRIER * i) / SAMPLE_COUNT) *
-            (b === 1 ? 1.5 : 0.5)
-          )
-      )
-      break
-
-    default:
-      modulated = bits.flatMap((b) => Array(SAMPLE_COUNT).fill(b))
-  }
-
-  let demodulated = ""
-  for (let i = 0; i < modulated.length; i += SAMPLE_COUNT) {
-    const segment = modulated.slice(i, i + SAMPLE_COUNT)
-    const avg = segment.reduce((a, b) => a + Math.abs(b), 0) / segment.length
-
-    if (algorithm === "ask") {
-      demodulated += avg > 0.6 ? "1" : "0"
-    } else if (algorithm === "fsk") {
-      const highFreq = segment.filter((_, idx) => idx > 0 && Math.abs(segment[idx] - segment[idx - 1]) > 0.5).length
-      demodulated += highFreq > 3 ? "1" : "0"
-    } else if (algorithm === "psk") {
-      demodulated += segment[0] < 0 ? "1" : "0"
-    } else if (algorithm === "qam") {
-      demodulated += avg > 0.8 ? "1" : "0"
-    } else {
-      demodulated += avg > 0.5 ? "1" : "0"
-    }
-  }
-
-  return {
-    original: data,
-    encoded: modulated,
-    decoded: demodulated,
-    metrics: calcMetrics(data.length, algorithm),
-  }
-}
-
-// ======================================================
-// ANALOG → DIGITAL
-// ======================================================
-
-function processAnalogToDigital(algorithm: string, data: string) {
-  const analogValues = parseAnalog(data)
-  let encoded: number[] = []
-  let decoded: number[] = []
-
-  switch (algorithm) {
-    case "pcm":
-      encoded = analogValues.map((v) => Math.round(v * 7) / 7)
-      decoded = [...encoded]
-      break
-
-    case "delta":
-    case "adaptive-delta":
-      encoded = [analogValues[0]]
-      for (let i = 1; i < analogValues.length; i++) {
-        encoded.push(analogValues[i] > analogValues[i - 1] ? 1 : 0)
-      }
-      decoded = [encoded[0]]
-      for (let i = 1; i < encoded.length; i++) {
-        decoded.push(decoded[i - 1] + (encoded[i] === 1 ? 0.1 : -0.1))
-      }
-      break
-
-    default:
-      encoded = [...analogValues]
-      decoded = [...analogValues]
-  }
-
-  return {
-    originalAnalog: analogValues,
-    encoded,
-    decodedAnalog: decoded,
-    metrics: calcAnalogMetrics(analogValues.length),
-  }
-}
-
-// ======================================================
-// ANALOG → ANALOG
-// ======================================================
-
-function processAnalogToAnalog(algorithm: string, data: string) {
-  const analogValues = parseAnalog(data)
-
-  const SAMPLES = 20
-  let modulated: number[]
-  let demodulated: number[]
-
-  switch (algorithm) {
-    case "am":
-      modulated = analogValues.flatMap((v) =>
-        Array.from({ length: SAMPLES }, (_, i) => v * (1 + 0.5 * Math.sin((2 * Math.PI * i) / SAMPLES))),
-      )
-      demodulated = []
-      for (let i = 0; i < modulated.length; i += SAMPLES) {
-        const segment = modulated.slice(i, i + SAMPLES)
-        const envelope = segment.reduce((sum, val) => sum + Math.abs(val), 0) / SAMPLES
-        demodulated.push(envelope / 1.5)
-      }
-      break
-    case "fm":
-      modulated = analogValues.flatMap((v) => {
-        const freq = 2 + Math.abs(v)
-        return Array.from({ length: SAMPLES }, (_, i) => Math.sin((2 * Math.PI * freq * i) / SAMPLES))
-      })
-      demodulated = []
-      for (let i = 0; i < modulated.length; i += SAMPLES) {
-        const segment = modulated.slice(i, i + SAMPLES)
-        let zeroCrossings = 0
-        for (let j = 1; j < segment.length; j++) {
-          if ((segment[j - 1] >= 0 && segment[j] < 0) || (segment[j - 1] < 0 && segment[j] >= 0)) {
-            zeroCrossings++
-          }
-        }
-        const freq = zeroCrossings / 2
-        demodulated.push(freq - 2)
-      }
-      break
-    case "pm":
-      modulated = analogValues.flatMap((v) =>
-        Array.from({ length: SAMPLES }, (_, i) => Math.sin((2 * Math.PI * 2 * i) / SAMPLES + v)),
-      )
-      demodulated = []
-      for (let i = 0; i < modulated.length; i += SAMPLES) {
-        const segment = modulated.slice(i, i + SAMPLES)
-        const phase = Math.atan2(segment[SAMPLES / 4] || 0, segment[0] || 1)
-        demodulated.push(phase)
-      }
-      break
-    default:
-      modulated = [...analogValues]
-      demodulated = [...analogValues]
-  }
-
-  return {
-    originalAnalog: analogValues,
-    encoded: modulated,
-    decodedAnalog: analogValues,
-    demodulatedSignal: demodulated,
+    encoded: enc,
+    decoded: dec,
     metrics: {
-      bitRate: "N/A",
-      signalLevels: "Continuous",
-      bandwidth: `${analogValues.length * 1000} Hz`,
+      bitRate: `${data.length * 1000} bps`,
+      signalLevels: algo === "ami" ? "3" : "2",
+      bandwidth: `${data.length * 500} Hz`,
     },
   }
 }
 
-// ======================================================
-// METRIC HELPERS
-// ======================================================
+// ============================================================
+// DIGITAL TO ANALOG
+// ============================================================
+function d2a(algo: string, data: string) {
+  const b = bits(data)
+  let mod: number[]
 
-function calcMetrics(length: number, algorithm: string) {
+  switch (algo) {
+    case "ask":
+      mod = b.flatMap(x => wave(S, () => x ? 1 : 0.3))
+      break
+    case "fsk":
+      mod = b.flatMap(x => wave(S, i => Math.sin(2 * Math.PI * (x ? 4 : 2) * i / S)))
+      break
+    case "psk":
+      mod = b.flatMap(x => wave(S, i => Math.sin(2 * Math.PI * C * i / S + (x ? Math.PI : 0))))
+      break
+    case "qam":
+      mod = b.flatMap(x => wave(S, i => Math.sin(2 * Math.PI * C * i / S) * (x ? 1.5 : 0.5)))
+      break
+    default:
+      mod = b.flatMap(x => wave(S, () => x))
+  }
+
+  let dem = ""
+  for (let i = 0; i < mod.length; i += S) {
+    const seg = mod.slice(i, i + S)
+    const avg = seg.reduce((a, v) => a + Math.abs(v), 0) / S
+
+    if (algo === "ask") dem += avg > 0.6 ? "1" : "0"
+    else if (algo === "fsk") dem += zeros(seg) >= 6 ? "1" : "0"
+    else if (algo === "psk") {
+      let cor = 0
+      for (let j = 0; j < S; j++) cor += seg[j] * Math.sin(2 * Math.PI * C * j / S)
+      dem += cor < 0 ? "1" : "0"
+    }
+    else if (algo === "qam") dem += avg > 0.8 ? "1" : "0"
+    else dem += avg > 0.5 ? "1" : "0"
+  }
+
   return {
-    bitRate: `${length * 1000} bps`,
-    signalLevels:
-      algorithm === "qam"
-        ? "16"
-        : algorithm === "psk"
-        ? "4"
-        : algorithm === "ami"
-        ? "3"
-        : "2",
-    bandwidth: `${length * 500} Hz`,
+    original: data,
+    encoded: mod,
+    decoded: dem,
+    metrics: {
+      bitRate: `${data.length * 1000} bps`,
+      signalLevels: algo === "qam" ? "16" : algo === "psk" ? "4" : "2",
+      bandwidth: `${data.length * 2000} Hz`,
+    },
   }
 }
 
-function calcAnalogMetrics(length: number) {
+// ============================================================
+// ANALOG TO DIGITAL
+// ============================================================
+function a2d(algo: string, data: string) {
+  const v = analog(data)
+  if (!v.length) return {
+    originalAnalog: [], encoded: [], decodedAnalog: [],
+    metrics: { bitRate: "0 bps", signalLevels: "256", bandwidth: "0 Hz" }
+  }
+
+  const min = Math.min(...v), max = Math.max(...v), rng = max - min || 1
+  const norm = v.map(x => (x - min) / rng)
+
+  let enc: number[], dec: number[]
+
+  switch (algo) {
+    case "pcm":
+      enc = norm.map(x => Math.round(x * (L - 1)))
+      dec = enc.map(x => x / (L - 1) * rng + min)
+      break
+
+    case "delta":
+    case "adaptive-delta":
+      enc = []
+      dec = [v[0]]
+      for (let i = 1; i < v.length; i++) {
+        const d = v[i] - v[i - 1]
+        enc.push(d >= 0 ? 1 : 0)
+        dec.push(dec[dec.length - 1] + (d >= 0 ? Math.abs(d) : -Math.abs(d)))
+      }
+      break
+
+    default:
+      enc = [...v]
+      dec = [...v]
+  }
+
   return {
-    bitRate: `${length * 8000} bps`,
-    signalLevels: "256",
-    bandwidth: `${length * 4000} Hz`,
+    originalAnalog: v,
+    encoded: enc,
+    decodedAnalog: dec,
+    metrics: {
+      bitRate: `${v.length * 8000} bps`,
+      signalLevels: algo === "pcm" ? "256" : "2",
+      bandwidth: `${v.length * 4000} Hz`,
+    },
+  }
+}
+
+// ============================================================
+// ANALOG TO ANALOG
+// ============================================================
+function a2a(algo: string, data: string) {
+  const v = analog(data)
+  if (!v.length) return {
+    originalAnalog: [], encoded: [], decodedAnalog: [], demodulatedSignal: [],
+    metrics: { bitRate: "N/A", signalLevels: "Continuous", bandwidth: "0 Hz" }
+  }
+
+  let mod: number[], dem: number[]
+
+  switch (algo) {
+    case "am":
+      mod = v.flatMap(x => wave(A, i => x * (1 + 0.5 * Math.sin(2 * Math.PI * i / A))))
+      dem = []
+      for (let i = 0; i < mod.length; i += A) {
+        dem.push(mod.slice(i, i + A).reduce((a, x) => a + Math.abs(x), 0) / A / 1.5)
+      }
+      break
+
+    case "fm":
+      mod = v.flatMap(x => wave(A, i => Math.sin(2 * Math.PI * (2 + Math.abs(x)) * i / A)))
+      dem = []
+      for (let i = 0; i < mod.length; i += A) {
+        dem.push(zeros(mod.slice(i, i + A)) / 2 - 2)
+      }
+      break
+
+    case "pm":
+      mod = v.flatMap(x => wave(A, i => Math.sin(2 * Math.PI * 2 * i / A + x)))
+      dem = []
+      for (let i = 0; i < mod.length; i += A) {
+        const seg = mod.slice(i, i + A)
+        dem.push(Math.atan2(seg[A / 4] || 0, seg[0] || 1))
+      }
+      break
+
+    default:
+      mod = [...v]
+      dem = [...v]
+  }
+
+  return {
+    originalAnalog: v,
+    encoded: mod,
+    decodedAnalog: v,
+    demodulatedSignal: dem,
+    metrics: {
+      bitRate: "N/A (Analog)",
+      signalLevels: "Continuous",
+      bandwidth: `${v.length * 1000} Hz`,
+    },
   }
 }

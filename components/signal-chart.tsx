@@ -43,66 +43,50 @@ export function SignalChart({ data, mode, type, algorithm }: SignalChartProps) {
     const signalHeight = height - padding - bottomPadding
     const bitWidth = signalWidth / values.length
 
-    let path = `M ${padding} ${padding + signalHeight / 2}`
+    let path = ""
+    let lastY = padding + signalHeight / 2
 
-    // NRZ-L: High for 1, Low for 0
-    if (algorithm === "nrz-l" || type === "input") {
-      values.forEach((bit, i) => {
-        const x = padding + i * bitWidth
-        const y = bit === 1 ? padding : padding + signalHeight
-        path += ` L ${x} ${y} L ${x + bitWidth} ${y}`
-      })
+    const drawLevel = (x: number, y: number, width: number) => {
+      if (path === "") {
+        path = `M ${x} ${y}`
+      } else if (y !== lastY) {
+        path += ` L ${x} ${lastY} L ${x} ${y}`
+      }
+      path += ` L ${x + width} ${y}`
+      lastY = y
     }
-    // NRZ-I: Transition on 1
-    else if (algorithm === "nrz-i") {
-      let currentLevel = 0
-      values.forEach((bit, i) => {
-        const x = padding + i * bitWidth
-        if (bit === 1) currentLevel = 1 - currentLevel
-        const y = currentLevel === 1 ? padding : padding + signalHeight
-        path += ` L ${x} ${y} L ${x + bitWidth} ${y}`
-      })
-    }
-    // Manchester: Transition in middle
-    else if (algorithm === "manchester") {
-      values.forEach((bit, i) => {
-        const x = padding + i * bitWidth
-        const midX = x + bitWidth / 2
-        if (bit === 1) {
-          path += ` L ${x} ${padding + signalHeight} L ${midX} ${padding + signalHeight} L ${midX} ${padding} L ${x + bitWidth} ${padding}`
-        } else {
-          path += ` L ${x} ${padding} L ${midX} ${padding} L ${midX} ${padding + signalHeight} L ${x + bitWidth} ${padding + signalHeight}`
-        }
-      })
-    }
-    // Differential Manchester
-    else if (algorithm === "diff-manchester") {
-      let currentLevel = 0
-      values.forEach((bit, i) => {
-        const x = padding + i * bitWidth
-        const midX = x + bitWidth / 2
-        if (bit === 0) currentLevel = 1 - currentLevel
 
-        const startY = currentLevel === 1 ? padding : padding + signalHeight
-        const endY = currentLevel === 1 ? padding + signalHeight : padding
-
-        path += ` L ${x} ${startY} L ${midX} ${startY} L ${midX} ${endY} L ${x + bitWidth} ${endY}`
-        currentLevel = 1 - currentLevel
+    if (type === "encoded" && (algorithm === "manchester" || algorithm === "diff-manchester")) {
+      const halfBitWidth = signalWidth / values.length
+      values.forEach((val, i) => {
+        const x = padding + i * halfBitWidth
+        const y = val === 1 ? padding : padding + signalHeight
+        drawLevel(x, y, halfBitWidth)
       })
-    }
-    // AMI: Alternating polarity for 1s
-    else if (algorithm === "ami") {
-      let polarity = 1
-      values.forEach((bit, i) => {
+    } else if (algorithm === "ami") {
+      // AMI: 3 levels (-1, 0, 1)
+      values.forEach((val, i) => {
         const x = padding + i * bitWidth
-        if (bit === 1) {
-          const y = polarity === 1 ? padding : padding + signalHeight
-          path += ` L ${x} ${y} L ${x + bitWidth} ${y}`
-          polarity *= -1
-        } else {
-          const y = padding + signalHeight / 2
-          path += ` L ${x} ${y} L ${x + bitWidth} ${y}`
-        }
+        let y
+        if (val === 1) y = padding
+        else if (val === -1) y = padding + signalHeight
+        else y = padding + signalHeight / 2
+        drawLevel(x, y, bitWidth)
+      })
+    } else if (algorithm === "pcm" && type === "encoded") {
+      // PCM: 256 levels (0-255) - map to signal height
+      const maxLevel = Math.max(...values) || 255
+      values.forEach((val, i) => {
+        const x = padding + i * bitWidth
+        const y = padding + signalHeight - (val / maxLevel) * signalHeight
+        drawLevel(x, y, bitWidth)
+      })
+    } else {
+      // Default binary: 0 = low, 1 = high
+      values.forEach((val, i) => {
+        const x = padding + i * bitWidth
+        const y = val === 1 ? padding : padding + signalHeight
+        drawLevel(x, y, bitWidth)
       })
     }
 
@@ -184,90 +168,79 @@ export function SignalChart({ data, mode, type, algorithm }: SignalChartProps) {
     }
 
     const width = 600
-    const height = 150 // Increased height to accommodate bit interval labels
+    const height = 150
     const padding = 20
-    const bottomPadding = 40 // Extra padding for bit interval labels
+    const bottomPadding = 40
     const signalWidth = width - 2 * padding
     const signalHeight = height - padding - bottomPadding
-    const bitWidth = signalWidth / values.length
 
-    let path = `M ${padding} ${padding + signalHeight / 2}`
+    // For encoded signals (modulated waveforms), draw the actual values
+    // For input signals in analog modes, also draw actual values
+    const isModulatedSignal = type === "encoded" &&
+      (algorithm === "ask" || algorithm === "fsk" || algorithm === "psk" || algorithm === "qam" ||
+       algorithm === "am" || algorithm === "fm" || algorithm === "pm")
 
-    if (algorithm === "ask") {
-      // ASK: Different amplitudes
-      values.forEach((bit, i) => {
+    let path = ""
+
+    if (isModulatedSignal) {
+      // Draw the actual modulated waveform from transmission.ts
+      const minVal = Math.min(...values)
+      const maxVal = Math.max(...values)
+      const range = maxVal - minVal || 1
+
+      values.forEach((val, i) => {
         const x = padding + (i / values.length) * signalWidth
-        const amplitude = bit === 1 ? signalHeight / 2 : signalHeight / 4
-        const points = 20
-        for (let j = 0; j < points; j++) {
-          const px = x + (j / points) * (signalWidth / values.length)
-          const py = padding + signalHeight / 2 - amplitude * Math.sin((j / points) * Math.PI * 4)
-          path += ` L ${px} ${py}`
-        }
-      })
-    } else if (algorithm === "fsk") {
-      // FSK: Different frequencies
-      values.forEach((bit, i) => {
-        const x = padding + (i / values.length) * signalWidth
-        const freq = bit === 1 ? 6 : 3
-        const points = 20
-        for (let j = 0; j < points; j++) {
-          const px = x + (j / points) * (signalWidth / values.length)
-          const py = padding + signalHeight / 2 - (signalHeight / 3) * Math.sin((j / points) * Math.PI * freq)
-          path += ` L ${px} ${py}`
-        }
-      })
-    } else if (algorithm === "psk" || algorithm === "qam") {
-      // PSK: Phase shifts
-      let phase = 0
-      values.forEach((bit, i) => {
-        if (bit === 1) phase = Math.PI
-        else phase = 0
-        const x = padding + (i / values.length) * signalWidth
-        const points = 20
-        for (let j = 0; j < points; j++) {
-          const px = x + (j / points) * (signalWidth / values.length)
-          const py = padding + signalHeight / 2 - (signalHeight / 3) * Math.sin((j / points) * Math.PI * 4 + phase)
-          path += ` L ${px} ${py}`
+        // Normalize to fit in signalHeight, centered
+        const normalized = (val - minVal) / range
+        const y = padding + signalHeight - normalized * signalHeight
+        if (i === 0) {
+          path = `M ${x} ${y}`
+        } else {
+          path += ` L ${x} ${y}`
         }
       })
     } else if (algorithm === "pcm") {
-      // PCM: Quantized steps
+      // PCM: Quantized steps - show actual quantized values
+      const minVal = Math.min(...values)
+      const maxVal = Math.max(...values)
+      const range = maxVal - minVal || 1
+
       values.forEach((val, i) => {
         const x = padding + (i / values.length) * signalWidth
-        const y = padding + signalHeight - val * signalHeight
-        path += ` L ${x} ${y}`
-      })
-    } else if (algorithm === "am" || algorithm === "fm" || algorithm === "pm") {
-      // Analog modulation
-      const numPoints = values.length * 20
-      for (let i = 0; i < numPoints; i++) {
-        const x = padding + (i / numPoints) * signalWidth
-        const t = i / numPoints
-        let y
-
-        if (algorithm === "am") {
-          const message = 0.5 + 0.5 * Math.sin(t * Math.PI * 4)
-          y = padding + signalHeight / 2 - message * (signalHeight / 3) * Math.sin(t * Math.PI * 20)
-        } else if (algorithm === "fm") {
-          const message = Math.sin(t * Math.PI * 4)
-          y = padding + signalHeight / 2 - (signalHeight / 3) * Math.sin(t * Math.PI * 20 + message * 5)
+        const normalized = (val - minVal) / range
+        const y = padding + signalHeight - normalized * signalHeight
+        if (i === 0) {
+          path = `M ${x} ${y}`
         } else {
-          const message = Math.sin(t * Math.PI * 4)
-          y = padding + signalHeight / 2 - (signalHeight / 3) * Math.sin(t * Math.PI * 20 + message)
+          path += ` L ${x} ${y}`
         }
-
-        path += ` L ${x} ${y}`
-      }
+      })
     } else {
-      // Default sine wave
-      const numPoints = 100
-      for (let i = 0; i < numPoints; i++) {
-        const x = padding + (i / numPoints) * signalWidth
-        const y = padding + signalHeight / 2 - (signalHeight / 3) * Math.sin((i / numPoints) * Math.PI * 8)
-        path += ` L ${x} ${y}`
-      }
+      // Default: draw actual values as continuous line
+      const minVal = Math.min(...values)
+      const maxVal = Math.max(...values)
+      const range = maxVal - minVal || 1
+
+      values.forEach((val, i) => {
+        const x = padding + (i / values.length) * signalWidth
+        const normalized = (val - minVal) / range
+        const y = padding + signalHeight - normalized * signalHeight
+        if (i === 0) {
+          path = `M ${x} ${y}`
+        } else {
+          path += ` L ${x} ${y}`
+        }
+      })
     }
+
+    // Calculate point positions for analog signals (to show sample points)
+    const minVal = Math.min(...values)
+    const maxVal = Math.max(...values)
+    const range = maxVal - minVal || 1
+    const samplePoints = values.map((val, i) => ({
+      x: padding + (i / (values.length - 1 || 1)) * signalWidth,
+      y: padding + signalHeight - ((val - minVal) / range) * signalHeight
+    }))
 
     return (
       <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} className="w-full">
@@ -289,49 +262,28 @@ export function SignalChart({ data, mode, type, algorithm }: SignalChartProps) {
           strokeWidth="2"
           className={type === "input" ? "text-primary" : type === "encoded" ? "text-chart-1" : "text-chart-2"}
         />
-
-        {values.map((bit, i) => {
-          const x = padding + i * bitWidth
-          const centerX = x + bitWidth / 2
-          return (
-            <g key={i}>
-              {/* Vertical line at bit boundary */}
-              <line
-                x1={x}
-                y1={padding + signalHeight + 5}
-                x2={x}
-                y2={padding + signalHeight + 15}
-                stroke="currentColor"
-                strokeWidth="1"
-                className="text-muted-foreground"
-              />
-              {/* Bit value label */}
-              <text
-                x={centerX}
-                y={padding + signalHeight + 30}
-                textAnchor="middle"
-                className="text-[11px] font-medium fill-foreground"
-              >
-                {bit}
-              </text>
-            </g>
-          )
-        })}
-        {/* Final boundary line */}
-        <line
-          x1={padding + values.length * bitWidth}
-          y1={padding + signalHeight + 5}
-          x2={padding + values.length * bitWidth}
-          y2={padding + signalHeight + 15}
-          stroke="currentColor"
-          strokeWidth="1"
-          className="text-muted-foreground"
-        />
+        {/* Show sample points for analog input/output */}
+        {mode === "analog-to-digital" && (type === "input" || type === "output") && samplePoints.map((pt, i) => (
+          <circle
+            key={i}
+            cx={pt.x}
+            cy={pt.y}
+            r={4}
+            className={type === "input" ? "fill-primary" : "fill-chart-2"}
+          />
+        ))}
       </svg>
     )
   }
 
-  const isDigitalMode = mode === "digital-to-digital" || (mode === "digital-to-analog" && type !== "encoded")
+  // Digital-to-Digital: all signals are digital
+  // Digital-to-Analog: input is digital, encoded is analog waveform, output (decoded) is digital
+  // Analog-to-Digital: input is analog, encoded is digital (PCM levels or delta bits), output is analog
+  // Analog-to-Analog: all signals are analog
+  const isDigitalMode =
+    mode === "digital-to-digital" ||
+    (mode === "digital-to-analog" && (type === "input" || type === "output")) ||
+    (mode === "analog-to-digital" && type === "encoded")
 
   return (
     <div className="rounded-lg border border-border bg-card p-4">

@@ -32,18 +32,19 @@ interface VisualizationPanelProps {
   isProcessing: boolean
 }
 
-// --- NEW: Universal parser for analog/digital signals ---
+// --- Universal parser for analog/digital signals ---
 function parseInput(mode: TransmissionMode, raw: string): number[] {
   if (!raw) return []
 
-  // Analog modes → parse analog values
-  if (mode.includes("analog")) {
-    const cleaned = raw.replace(/["“”„‟‹›«»'`]/g, "").trim()
+  // Only analog-to-digital and analog-to-analog have analog INPUT
+  // digital-to-digital and digital-to-analog have digital INPUT
+  if (mode === "analog-to-digital" || mode === "analog-to-analog") {
+    const cleaned = raw.replace(/["""„‟‹›«»'`]/g, "").trim()
     const matches = cleaned.match(/-?\d*\.?\d+(?:e-?\d+)?/gi) || []
     return matches.map(Number)
   }
 
-  // Digital modes → split bits
+  // Digital input modes → split bits
   return raw.split("").map((b) => Number.parseInt(b))
 }
 
@@ -61,11 +62,20 @@ export function VisualizationPanel({
   const encodedSignal =
     Array.isArray(results?.encoded) ? results.encoded : []
 
-  const outputSignal =
-    results?.demodulatedSignal ??
-    results?.decoded ??
-    results?.decodedAnalog ??
-    []
+  // Determine output signal based on mode
+  let outputSignal: number[] | string = []
+  if (results) {
+    if (mode === "digital-to-digital" || mode === "digital-to-analog") {
+      // Output is digital (decoded bits as string)
+      outputSignal = results.decoded ?? ""
+    } else if (mode === "analog-to-analog") {
+      // Output is demodulated analog signal
+      outputSignal = results.demodulatedSignal ?? results.decodedAnalog ?? []
+    } else {
+      // analog-to-digital: output is decoded analog
+      outputSignal = results.decodedAnalog ?? []
+    }
+  }
 
   return (
     <Card className="p-6 h-full">

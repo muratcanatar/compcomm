@@ -18,22 +18,17 @@ export function processTransmission(mode: TransmissionMode, algorithm: string, i
 function processDigitalToDigital(algorithm: string, data: string) {
   const bits = data.split("").map((b) => Number.parseInt(b))
 
-  // Encode
   let encoded: number[]
-  let level = 0 // Declare level variable once at function scope
+  let level = 0
   switch (algorithm) {
     case "nrz-l":
-      encoded = bits.map((b) => b) // Direct mapping
+      encoded = bits.map((b) => b)
       break
     case "nrz-i":
       encoded = []
       level = 0
-      bits.forEach((b, idx) => {
-        if (idx === 0) {
-          level = b
-        } else {
-          if (b === 1) level = 1 - level
-        }
+      bits.forEach((b) => {
+        if (b === 1) level = 1 - level
         encoded.push(level)
       })
       break
@@ -44,9 +39,9 @@ function processDigitalToDigital(algorithm: string, data: string) {
       encoded = []
       level = 0
       bits.forEach((b) => {
-        if (b === 0) level = 1 - level // transition at start for 0
+        if (b === 0) level = 1 - level
         const start = level
-        level = 1 - level // mandatory mid-bit transition
+        level = 1 - level
         const mid = level
         encoded.push(start, mid)
       })
@@ -66,7 +61,6 @@ function processDigitalToDigital(algorithm: string, data: string) {
       encoded = bits
   }
 
-  // Decode (reverse the encoding process)
   let decoded: string
   switch (algorithm) {
     case "nrz-l":
@@ -118,15 +112,13 @@ function processDigitalToAnalog(algorithm: string, data: string) {
   const bits = data.split("").map((b) => Number.parseInt(b))
 
   let modulated: number[]
-  const carrierFreq = 2 // Carrier frequency multiplier
+  const carrierFreq = 2
 
   switch (algorithm) {
     case "ask":
-      // Amplitude Shift Keying: 0 = low amplitude, 1 = high amplitude
       modulated = bits.flatMap((b) => Array(10).fill(b === 1 ? 1 : 0.3))
       break
     case "fsk":
-      // Frequency Shift Keying: 0 = low freq, 1 = high freq
       modulated = bits.flatMap((b) => {
         const freq = b === 1 ? 4 : 2
         return Array(10)
@@ -135,7 +127,6 @@ function processDigitalToAnalog(algorithm: string, data: string) {
       })
       break
     case "psk":
-      // Phase Shift Keying: 0 = 0°, 1 = 180°
       modulated = bits.flatMap((b) =>
         Array(10)
           .fill(0)
@@ -143,7 +134,6 @@ function processDigitalToAnalog(algorithm: string, data: string) {
       )
       break
     case "qam":
-      // Quadrature Amplitude Modulation (simplified)
       modulated = bits.flatMap((b) =>
         Array(10)
           .fill(0)
@@ -167,10 +157,20 @@ function processDigitalToAnalog(algorithm: string, data: string) {
     if (algorithm === "ask") {
       demodulated += avg > 0.6 ? "1" : "0"
     } else if (algorithm === "fsk") {
-      const highFreq = segment.filter((_, idx) => idx > 0 && Math.abs(segment[idx] - segment[idx - 1]) > 0.5).length
-      demodulated += highFreq > 3 ? "1" : "0"
+      let zeroCrossings = 0
+      for (let j = 1; j < segment.length; j++) {
+        if ((segment[j - 1] >= 0 && segment[j] < 0) || (segment[j - 1] < 0 && segment[j] >= 0)) {
+          zeroCrossings++
+        }
+      }
+      demodulated += zeroCrossings >= 6 ? "1" : "0"
     } else if (algorithm === "psk") {
-      demodulated += segment[0] < 0 ? "1" : "0"
+      let correlation = 0
+      for (let j = 0; j < segment.length; j++) {
+        const ref = Math.sin((2 * Math.PI * carrierFreq * j) / 10)
+        correlation += segment[j] * ref
+      }
+      demodulated += correlation < 0 ? "1" : "0"
     } else if (algorithm === "qam") {
       demodulated += avg > 0.8 ? "1" : "0"
     } else {
@@ -191,50 +191,64 @@ function processDigitalToAnalog(algorithm: string, data: string) {
 }
 
 const parseAnalogValues = (raw: string) => {
-  // Remove ALL quotation-like characters, including unicode curly quotes
-  const cleaned = raw.replace(/["“”„‟‹›«»'`]/g, "").trim()
-
-  // Extract numbers robustly (supports floats, negatives, scientific notation)
+  const cleaned = raw.replace(/["""„‟‹›«»'`]/g, "").trim()
   const matches = cleaned.match(/-?\d*\.?\d+(?:e-?\d+)?/gi) || []
-
   return matches.map(Number)
 }
-
 
 function processAnalogToDigital(algorithm: string, data: string) {
   const analogValues = parseAnalogValues(data)
 
-  // Sampling and Quantization
-  let encoded: number[]
-  switch (algorithm) {
-    case "pcm":
-      // 8-level quantization
-      encoded = analogValues.map((v) => Math.round(v * 7) / 7)
-      break
-    case "delta":
-    case "adaptive-delta":
-      // Delta modulation: encode differences
-      encoded = [analogValues[0]]
-      for (let i = 1; i < analogValues.length; i++) {
-        encoded.push(analogValues[i] - analogValues[i - 1] > 0 ? 1 : 0)
-      }
-      break
-    default:
-      encoded = analogValues
+  if (analogValues.length === 0) {
+    return {
+      originalAnalog: [],
+      encoded: [],
+      decodedAnalog: [],
+      metrics: {
+        bitRate: "0 bps",
+        signalLevels: "256",
+        bandwidth: "0 Hz",
+      },
+    }
   }
 
-  // Decode
+  const minVal = Math.min(...analogValues)
+  const maxVal = Math.max(...analogValues)
+  const range = maxVal - minVal || 1
+  const normalized = analogValues.map(v => (v - minVal) / range)
+
+  let encoded: number[]
   let decoded: number[]
+
   switch (algorithm) {
+    case "pcm": {
+      const levels = 256
+      encoded = normalized.map(v => Math.round(v * (levels - 1)))
+      decoded = encoded.map(v => v / (levels - 1))
+      decoded = decoded.map(v => v * range + minVal)
+      break
+    }
     case "delta":
-    case "adaptive-delta":
-      decoded = [encoded[0]]
-      for (let i = 1; i < encoded.length; i++) {
-        decoded.push(decoded[i - 1] + (encoded[i] === 1 ? 0.1 : -0.1))
+    case "adaptive-delta": {
+      encoded = []
+      decoded = [analogValues[0]]
+
+      for (let i = 1; i < analogValues.length; i++) {
+        const diff = analogValues[i] - analogValues[i - 1]
+        if (diff >= 0) {
+          encoded.push(1)
+        } else {
+          encoded.push(0)
+        }
+        const step = Math.abs(diff)
+        const prevDecoded = decoded[decoded.length - 1]
+        decoded.push(prevDecoded + (encoded[encoded.length - 1] === 1 ? step : -step))
       }
       break
+    }
     default:
-      decoded = encoded
+      encoded = [...analogValues]
+      decoded = [...analogValues]
   }
 
   return {
@@ -243,7 +257,7 @@ function processAnalogToDigital(algorithm: string, data: string) {
     decodedAnalog: decoded,
     metrics: {
       bitRate: `${analogValues.length * 8000} bps`,
-      signalLevels: "256",
+      signalLevels: algorithm === "pcm" ? "256" : "2",
       bandwidth: `${analogValues.length * 4000} Hz`,
     },
   }
